@@ -307,4 +307,79 @@ mod tests {
         client.transfer_super_admin(&admin, &new_admin);
         assert_eq!(client.super_admin(), new_admin);
     }
+
+    #[test]
+    fn test_blacklist_address_with_no_role_succeeds() {
+        // Blacklisting an address that has no role should succeed silently
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+        // This should not panic or return an error
+        client.blacklist(&admin, &user);
+        assert!(client.is_blacklisted(&user));
+    }
+
+    #[test]
+    fn test_super_admin_cannot_grant_to_blacklisted() {
+        // Even the super admin cannot grant a role to a blacklisted address
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+        client.blacklist(&admin, &user);
+        let result = client.try_grant_role(&admin, &role, &user);
+        assert_eq!(result, Err(Ok(AccessError::Blacklisted)));
+    }
+
+    #[test]
+    fn test_blacklist_address_with_role_revokes_and_blocks_future_grants() {
+        // Blacklisting an address that has a role should:
+        // 1. Allow the blacklisting to succeed
+        // 2. Block future grant attempts
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+        
+        // First, grant the role
+        client.grant_role(&admin, &role, &user);
+        assert!(client.has_role(&role, &user));
+        
+        // Blacklist the user - this should succeed
+        client.blacklist(&admin, &user);
+        assert!(client.is_blacklisted(&user));
+        
+        // Attempt to grant the role again (should fail because they already have it)
+        let result = client.try_grant_role(&admin, &role, &user);
+        assert_eq!(result, Err(Ok(AccessError::AlreadyHasRole)));
+        
+        // Revoke the role
+        client.revoke_role(&admin, &role, &user);
+        assert!(!client.has_role(&role, &user));
+        
+        // Now try to grant again - should fail because blacklisted
+        let result = client.try_grant_role(&admin, &role, &user);
+        assert_eq!(result, Err(Ok(AccessError::Blacklisted)));
+    }
+
+    #[test]
+    fn test_unblacklist_allows_role_grant() {
+        // Removing an address from the blacklist should allow role grants again
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+        
+        // Blacklist the user
+        client.blacklist(&admin, &user);
+        assert!(client.is_blacklisted(&user));
+        
+        // Attempt to grant should fail
+        let result = client.try_grant_role(&admin, &role, &user);
+        assert_eq!(result, Err(Ok(AccessError::Blacklisted)));
+        
+        // Remove from blacklist
+        client.unblacklist(&admin, &user);
+        assert!(!client.is_blacklisted(&user));
+        
+        // Now grant should succeed
+        client.grant_role(&admin, &role, &user);
+        assert!(client.has_role(&role, &user));
+    }
 }
