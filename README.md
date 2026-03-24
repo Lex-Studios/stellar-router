@@ -196,6 +196,33 @@ stellar contract invoke --id <TIMELOCK_ID> --network testnet --source admin \
   --delay 86400
 ```
 
+## FAQ
+
+**What is Soroban?**
+Soroban is the smart contract platform built into the Stellar network, designed for
+predictable performance and low fees. See the [official docs](https://developers.stellar.org/docs/build/smart-contracts/overview) for more.
+
+**Do I need to deploy all 6 contracts?**
+No. `router-core` is the only required contract — it handles route registration and
+resolution. The others are optional enhancements:
+- `router-registry` — only needed if you want versioned contract address management
+- `router-access` — only needed if you want role-based access control
+- `router-middleware` — only needed if you want rate limiting or call hooks
+- `router-timelock` — only needed if you want delayed execution of config changes
+- `router-multicall` — only needed if you want to batch multiple calls in one transaction
+
+**Can I use just one contract from this suite?**
+Yes. Each contract is independently deployable and usable. They are designed to
+complement each other but have no hard dependencies between them. You can deploy
+only the contracts that fit your use case.
+
+**What network should I use for development?**
+Use the Stellar **testnet**. It is a public network that mirrors mainnet behaviour
+but uses test tokens with no real value, so you can deploy and iterate freely without
+any cost. You can fund a testnet account using the
+[Stellar Friendbot](https://developers.stellar.org/docs/learn/fundamentals/networks).
+Only move to **mainnet** when your contracts are fully tested and audited.
+
 ## License
 
 MIT
