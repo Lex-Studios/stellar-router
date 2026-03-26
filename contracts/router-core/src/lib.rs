@@ -600,15 +600,29 @@ mod tests {
         
         // Verify an event was emitted
         assert_eq!(events_after, events_before + 1);
+    }
+
+    #[test]
     fn test_resolve_unknown_route_fails() {
         let (env, _admin, client) = setup();
         let name = String::from_str(&env, "unknown");
         let result = client.try_resolve(&name);
         assert_eq!(result, Err(Ok(RouterError::RouteNotFound)));
+    }
+
+    #[test]
     fn test_get_all_routes_empty() {
         let (env, _, client) = setup();
         let routes: Vec<String> = client.get_all_routes();
         assert!(routes.is_empty());
+    }
+
+    #[test]
+    fn test_initialize_twice_fails() {
+        let (env, _, client) = setup();
+        let second_admin = Address::generate(&env);
+        let result = client.try_initialize(&second_admin);
+        assert_eq!(result, Err(Ok(RouterError::AlreadyInitialized)));
     }
 
     #[test]
