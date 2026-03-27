@@ -534,4 +534,23 @@ mod tests {
         let result = client.try_transfer_admin(&attacker, &new_admin);
         assert_eq!(result, Err(Ok(MiddlewareError::Unauthorized)));
     }
+
+    #[test]
+    fn test_old_admin_locked_out_after_transfer() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+
+        // old admin should no longer be able to configure routes
+        let route = String::from_str(&env, "oracle/get_price");
+        let result = client.try_configure_route(&admin, &route, &10, &60, &true);
+        assert_eq!(result, Err(Ok(MiddlewareError::Unauthorized)));
+
+        // new admin should be able to configure routes
+        assert!(
+            client
+                .try_configure_route(&new_admin, &route, &10, &60, &true)
+                .is_ok()
+        );
+    }
 }

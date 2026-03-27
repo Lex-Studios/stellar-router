@@ -524,4 +524,19 @@ mod tests {
         let result = client.try_transfer_admin(&attacker, &new_admin);
         assert_eq!(result, Err(Ok(MulticallError::Unauthorized)));
     }
+
+    #[test]
+    fn test_old_admin_locked_out_after_transfer() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+
+        // old admin should no longer be able to update admin-only config
+        let result = client.try_set_max_batch_size(&admin, &5);
+        assert_eq!(result, Err(Ok(MulticallError::Unauthorized)));
+
+        // new admin should be able to update config
+        assert!(client.try_set_max_batch_size(&new_admin, &5).is_ok());
+        assert_eq!(client.max_batch_size(), 5);
+    }
 }

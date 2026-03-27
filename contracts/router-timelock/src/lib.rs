@@ -569,4 +569,19 @@ mod tests {
         let result = client.try_transfer_admin(&attacker, &new_admin);
         assert_eq!(result, Err(Ok(TimelockError::Unauthorized)));
     }
+
+    #[test]
+    fn test_old_admin_locked_out_after_transfer() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&admin, &new_admin);
+
+        // old admin should no longer be able to call admin-only functions
+        let result = client.try_set_min_delay(&admin, &7200);
+        assert_eq!(result, Err(Ok(TimelockError::Unauthorized)));
+
+        // new admin should be able to update min delay
+        assert!(client.try_set_min_delay(&new_admin, &7200).is_ok());
+        assert_eq!(client.min_delay(), 7200);
+    }
 }
