@@ -286,6 +286,10 @@ impl RouterCore {
             .ok_or(RouterError::RouteNotFound)?;
 
         if entry.paused {
+            env.events().publish(
+                (Symbol::new(&env, "route_resolve_paused"),),
+                (name.clone(),),
+            );
             return Err(RouterError::RoutePaused);
         }
 
@@ -678,6 +682,29 @@ mod tests {
     }
 
     #[test]
+    fn test_paused_route_emits_event() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        
+        client.register_route(&admin, &name, &addr);
+        client.set_route_paused(&admin, &name, &true);
+        
+        // Attempt to resolve the paused route
+        let _ = client.try_resolve(&name);
+        
+        // Verify the route_resolve_paused event was emitted
+        let event = env.events().all().last().unwrap().clone();
+        assert_eq!(event.0, client.address);
+        assert_eq!(
+            event.1,
+            vec![&env, Symbol::new(&env, "route_resolve_paused").into_val(&env)]
+        );
+        let expected_data: Val = (name.clone(),).into_val(&env);
+        assert_eq!(event.2, expected_data);
+    }
+
+    #[test]
     fn test_pause_router() {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
@@ -936,6 +963,9 @@ mod tests {
         // Even with a valid route, resolve should fail with RouterPaused, not RouteNotFound
         let result = client.try_resolve(&name);
         assert_eq!(result, Err(Ok(RouterError::RouterPaused)));
+    }
+
+    #[test]
     fn test_add_alias_resolves_to_original() {
         let (env, admin, client) = setup();
         let name = String::from_str(&env, "oracle");
