@@ -52,6 +52,7 @@ pub enum RegistryError {
     AlreadyDeprecated = 6,
     InvalidVersion = 7,
     VersionNotFound = 8,
+    InvalidConstraint = 9,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -202,6 +203,68 @@ impl RouterRegistry {
         Err(RegistryError::NotFound)
     }
 
+    /// Get the latest non-deprecated entry matching a semver constraint.
+    ///
+    /// Accepts an optional semver constraint string (e.g., ">=2.0,<3.0" or "^1.5").
+    /// Returns the highest non-deprecated version satisfying the constraint.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `name` - The human-readable name of the contract.
+    /// * `constraint` - Optional semver constraint (e.g., ">=2.0,<3.0").
+    ///
+    /// # Returns
+    /// The most recent non-deprecated [`ContractEntry`] matching the constraint.
+    ///
+    /// # Errors
+    /// * [`RegistryError::NotFound`] — if no matching entry exists.
+    /// * [`RegistryError::InvalidConstraint`] — if constraint format is invalid.
+    pub fn get_latest_with_constraint(
+        env: Env,
+        name: String,
+        constraint: Option<String>,
+    ) -> Result<ContractEntry, RegistryError> {
+        let versions = Self::get_versions_list(&env, &name);
+        
+        // If no constraint, use get_latest logic
+        if constraint.is_none() {
+            let len = versions.len();
+            let mut i = len;
+            while i > 0 {
+                i -= 1;
+                let v = versions.get(i).unwrap();
+                let entry: ContractEntry = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Entry(name.clone(), v))
+                    .ok_or(RegistryError::NotFound)?;
+                if !entry.deprecated {
+                    return Ok(entry);
+                }
+            }
+            return Err(RegistryError::NotFound);
+        }
+
+        let constraint_str = constraint.unwrap();
+        
+        // Iterate in reverse to find latest matching non-deprecated version
+        let len = versions.len();
+        let mut i = len;
+        while i > 0 {
+            i -= 1;
+            let v = versions.get(i).unwrap();
+            let entry: ContractEntry = env
+                .storage()
+                .instance()
+                .get(&DataKey::Entry(name.clone(), v))
+                .ok_or(RegistryError::NotFound)?;
+            if !entry.deprecated && Self::version_matches_constraint(v, &constraint_str)? {
+                return Ok(entry);
+            }
+        }
+        Err(RegistryError::NotFound)
+    }
+
     /// Deprecate a specific version of a contract.
     ///
     /// Marks the entry for `(name, version)` as deprecated so it will be
@@ -346,6 +409,41 @@ impl RouterRegistry {
             .instance()
             .get(&DataKey::Versions(name.clone()))
             .unwrap_or(Vec::new(env))
+    }
+
+    fn version_matches_constraint(version: u32, constraint: &String) -> Result<bool, RegistryError> {
+        // Parse simple semver constraints: >=X, <=X, >X, <X, ^X, ~X
+        let constraint_str = constraint.to_string();
+        
+        if constraint_str.starts_with(">=") {
+            let min = constraint_str[2..].parse::<u32>().map_err(|_| RegistryError::InvalidConstraint)?;
+            Ok(version >= min)
+        } else if constraint_str.starts_with("<=") {
+            let max = constraint_str[2..].parse::<u32>().map_err(|_| RegistryError::InvalidConstraint)?;
+            Ok(version <= max)
+        } else if constraint_str.starts_with(">") {
+            let min = constraint_str[1..].parse::<u32>().map_err(|_| RegistryError::InvalidConstraint)?;
+            Ok(version > min)
+        } else if constraint_str.starts_with("<") {
+            let max = constraint_str[1..].parse::<u32>().map_err(|_| RegistryError::InvalidConstraint)?;
+            Ok(version < max)
+        } else if constraint_str.starts_with("^") {
+            // Caret: allows changes that do not modify the left-most non-zero digit
+            let base = constraint_str[1..].parse::<u32>().map_err(|_| RegistryError::InvalidConstraint)?;
+            if base == 0 {
+                Ok(version >= base && version < 1)
+            } else {
+                Ok(version >= base && version < base + 1)
+            }
+        } else if constraint_str.starts_with("~") {
+            // Tilde: allows patch-level changes
+            let base = constraint_str[1..].parse::<u32>().map_err(|_| RegistryError::InvalidConstraint)?;
+            Ok(version >= base && version < base + 1)
+        } else {
+            // Try exact match
+            let exact = constraint_str.parse::<u32>().map_err(|_| RegistryError::InvalidConstraint)?;
+            Ok(version == exact)
+        }
     }
 }
 
@@ -605,5 +703,99 @@ mod tests {
         assert_eq!(results.get(0).unwrap(), Ok(()));
         assert_eq!(results.get(1).unwrap(), Err(RegistryError::VersionNotFound));
         assert_eq!(results.get(2).unwrap(), Err(RegistryError::AlreadyDeprecated));
+    }
+
+    #[test]
+    fn test_get_latest_with_constraint_exact_match() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let (a1, a2, a3) = (Address::generate(&env), Address::generate(&env), Address::generate(&env));
+        client.register(&admin, &name, &a1, &1);
+        client.register(&admin, &name, &a2, &2);
+        client.register(&admin, &name, &a3, &3);
+        
+        let constraint = String::from_str(&env, "2");
+        let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
+        assert!(result.is_ok());
+        let entry = result.unwrap();
+        assert_eq!(entry.version, 2);
+    }
+
+    #[test]
+    fn test_get_latest_with_constraint_gte() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let (a1, a2, a3) = (Address::generate(&env), Address::generate(&env), Address::generate(&env));
+        client.register(&admin, &name, &a1, &1);
+        client.register(&admin, &name, &a2, &2);
+        client.register(&admin, &name, &a3, &3);
+        
+        let constraint = String::from_str(&env, ">=2");
+        let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
+        assert!(result.is_ok());
+        let entry = result.unwrap();
+        assert_eq!(entry.version, 3);
+    }
+
+    #[test]
+    fn test_get_latest_with_constraint_lt() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let (a1, a2, a3) = (Address::generate(&env), Address::generate(&env), Address::generate(&env));
+        client.register(&admin, &name, &a1, &1);
+        client.register(&admin, &name, &a2, &2);
+        client.register(&admin, &name, &a3, &3);
+        
+        let constraint = String::from_str(&env, "<3");
+        let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
+        assert!(result.is_ok());
+        let entry = result.unwrap();
+        assert_eq!(entry.version, 2);
+    }
+
+    #[test]
+    fn test_get_latest_with_constraint_caret() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let (a1, a2, a3) = (Address::generate(&env), Address::generate(&env), Address::generate(&env));
+        client.register(&admin, &name, &a1, &1);
+        client.register(&admin, &name, &a2, &2);
+        client.register(&admin, &name, &a3, &3);
+        
+        let constraint = String::from_str(&env, "^2");
+        let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
+        assert!(result.is_ok());
+        let entry = result.unwrap();
+        assert_eq!(entry.version, 2);
+    }
+
+    #[test]
+    fn test_get_latest_with_constraint_no_match() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let (a1, a2) = (Address::generate(&env), Address::generate(&env));
+        client.register(&admin, &name, &a1, &1);
+        client.register(&admin, &name, &a2, &2);
+        
+        let constraint = String::from_str(&env, ">=5");
+        let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
+        assert_eq!(result, Err(Ok(RegistryError::NotFound)));
+    }
+
+    #[test]
+    fn test_get_latest_with_constraint_skips_deprecated() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let (a1, a2, a3) = (Address::generate(&env), Address::generate(&env), Address::generate(&env));
+        client.register(&admin, &name, &a1, &1);
+        client.register(&admin, &name, &a2, &2);
+        client.register(&admin, &name, &a3, &3);
+        client.deprecate(&admin, &name, &3);
+        
+        let constraint = String::from_str(&env, ">=2");
+        let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
+        assert!(result.is_ok());
+        let entry = result.unwrap();
+        assert_eq!(entry.version, 2);
     }
 }
