@@ -713,4 +713,42 @@ mod tests {
         assert!(routes.contains(&oracle));
         assert!(routes.contains(&vault));
     }
+
+    #[test]
+    fn test_get_all_routes_updates_after_remove() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let vault = String::from_str(&env, "vault");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+
+        client.register_route(&admin, &oracle, &addr1);
+        client.register_route(&admin, &vault, &addr2);
+        assert_eq!(client.get_all_routes().len(), 2);
+
+        client.remove_route(&admin, &oracle);
+        let routes = client.get_all_routes();
+        assert_eq!(routes.len(), 1);
+        assert!(!routes.contains(&oracle));
+        assert!(routes.contains(&vault));
+    }
+
+    #[test]
+    fn test_get_all_routes_re_register_after_remove() {
+        let (env, admin, client) = setup();
+        let oracle = String::from_str(&env, "oracle");
+        let addr1 = Address::generate(&env);
+        let addr2 = Address::generate(&env);
+
+        client.register_route(&admin, &oracle, &addr1);
+        assert_eq!(client.get_all_routes().len(), 1);
+
+        client.remove_route(&admin, &oracle);
+        assert_eq!(client.get_all_routes().len(), 0);
+
+        client.register_route(&admin, &oracle, &addr2);
+        let routes = client.get_all_routes();
+        assert_eq!(routes.len(), 1);
+        assert!(routes.contains(&oracle));
+    }
 }
