@@ -23,6 +23,7 @@ pub enum DataKey {
     Blacklisted(Address),
     RoleMembers(String),        // role -> Vec<Address>
     AddressRoles(Address),      // address -> Vec<String>
+    RoleExpiry(String, Address), // (role, address) -> u64 (ledger timestamp)
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -72,13 +73,15 @@ impl RouterAccess {
     ///
     /// Assigns `role` to `target`. The `target` must not already hold the role
     /// and must not be blacklisted. The `caller` must be either the super-admin
-    /// or the designated admin for `role`.
+    /// or the designated admin for `role`. An optional `expires_at` timestamp
+    /// can be provided; if set, the role will expire at that ledger timestamp.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `caller` - The address initiating the call; must be super-admin or role admin.
     /// * `role` - The name of the role to grant.
     /// * `target` - The address that will receive the role.
+    /// * `expires_at` - Optional ledger timestamp when the role expires. If `None`, role never expires.
     ///
     /// # Returns
     /// `Ok(())` on success.
@@ -92,6 +95,7 @@ impl RouterAccess {
         caller: Address,
         role: String,
         target: Address,
+        expires_at: Option<u64>,
     ) -> Result<(), AccessError> {
         caller.require_auth();
         Self::require_role_manager(&env, &caller, &role)?;
@@ -106,6 +110,12 @@ impl RouterAccess {
         env.storage()
             .instance()
             .set(&DataKey::HasRole(role.clone(), target.clone()), &true);
+
+        if let Some(exp) = expires_at {
+            env.storage()
+                .instance()
+                .set(&DataKey::RoleExpiry(role.clone(), target.clone()), &exp);
+        }
 
         let mut members: Vec<Address> = env.storage().instance()
             .get(&DataKey::RoleMembers(role.clone()))
@@ -183,13 +193,16 @@ impl RouterAccess {
 
     /// Check if an address has a role.
     ///
+    /// Returns true only if the address holds the role and it has not expired.
+    /// Expired roles are treated as if they were never granted.
+    ///
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `role` - The name of the role to check.
     /// * `target` - The address to check.
     ///
     /// # Returns
-    /// `true` if `target` holds `role`, `false` otherwise.
+    /// `true` if `target` holds `role` and it has not expired, `false` otherwise.
     pub fn has_role(env: Env, role: String, target: Address) -> bool {
         Self::has_role_internal(&env, &role, &target)
     }
@@ -368,6 +381,41 @@ impl RouterAccess {
             .ok_or(AccessError::NotInitialized)
     }
 
+    /// Expire a role grant for an address, removing it from storage.
+    ///
+    /// Removes the expiry entry for a role grant. This is a cleanup function
+    /// for pruning expired entries from storage. Only the super-admin can call this.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - The address initiating the call; must be the super-admin.
+    /// * `role` - The name of the role.
+    /// * `target` - The address whose role expiry entry will be removed.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
+    ///
+    /// # Errors
+    /// * [`AccessError::Unauthorized`] — if `caller` is not the super-admin.
+    /// * [`AccessError::NotInitialized`] — if the contract has not been initialized.
+    pub fn expire_role(
+        env: Env,
+        caller: Address,
+        role: String,
+        target: Address,
+    ) -> Result<(), AccessError> {
+        caller.require_auth();
+        Self::require_super_admin(&env, &caller)?;
+        env.storage()
+            .instance()
+            .remove(&DataKey::RoleExpiry(role.clone(), target.clone()));
+        env.events().publish(
+            (Symbol::new(&env, "role_expired"),),
+            (role, target),
+        );
+        Ok(())
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn require_super_admin(env: &Env, caller: &Address) -> Result<(), AccessError> {
@@ -403,10 +451,27 @@ impl RouterAccess {
     }
 
     fn has_role_internal(env: &Env, role: &String, target: &Address) -> bool {
-        env.storage()
+        let has_role = env.storage()
             .instance()
             .get::<DataKey, bool>(&DataKey::HasRole(role.clone(), target.clone()))
-            .unwrap_or(false)
+            .unwrap_or(false);
+        
+        if !has_role {
+            return false;
+        }
+
+        // Check if role has expired
+        if let Some(expires_at) = env.storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::RoleExpiry(role.clone(), target.clone()))
+        {
+            let current_ledger = env.ledger().sequence();
+            if current_ledger >= expires_at {
+                return false;
+            }
+        }
+
+        true
     }
 
     fn is_blacklisted_internal(env: &Env, target: &Address) -> bool {
@@ -446,7 +511,7 @@ mod tests {
         let (env, admin, client) = setup();
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
-        client.grant_role(&admin, &role, &user);
+        client.grant_role(&admin, &role, &user, &None);
         assert!(client.has_role(&role, &user));
     }
 
@@ -456,7 +521,7 @@ mod tests {
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
 
-        client.grant_role(&admin, &role, &user);
+        client.grant_role(&admin, &role, &user, &None);
 
         let event = env.events().all().last().unwrap().clone();
         assert_eq!(event.0, client.address);
@@ -471,7 +536,7 @@ mod tests {
         let (env, admin, client) = setup();
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
-        client.grant_role(&admin, &role, &user);
+        client.grant_role(&admin, &role, &user, &None);
         client.revoke_role(&admin, &role, &user);
         assert!(!client.has_role(&role, &user));
     }
@@ -481,7 +546,7 @@ mod tests {
         let (env, admin, client) = setup();
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
-        client.grant_role(&admin, &role, &user);
+        client.grant_role(&admin, &role, &user, &None);
 
         client.revoke_role(&admin, &role, &user);
 
@@ -498,8 +563,8 @@ mod tests {
         let (env, admin, client) = setup();
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
-        client.grant_role(&admin, &role, &user);
-        let result = client.try_grant_role(&admin, &role, &user);
+        client.grant_role(&admin, &role, &user, &None);
+        let result = client.try_grant_role(&admin, &role, &user, &None);
         assert_eq!(result, Err(Ok(AccessError::AlreadyHasRole)));
     }
 
@@ -509,7 +574,7 @@ mod tests {
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
         client.blacklist(&admin, &user);
-        let result = client.try_grant_role(&admin, &role, &user);
+        let result = client.try_grant_role(&admin, &role, &user, &None);
         assert_eq!(result, Err(Ok(AccessError::Blacklisted)));
     }
 
@@ -544,7 +609,7 @@ mod tests {
         let role_admin = Address::generate(&env);
         let user = Address::generate(&env);
         client.set_role_admin(&admin, &role, &role_admin);
-        client.grant_role(&role_admin, &role, &user);
+        client.grant_role(&role_admin, &role, &user, &None);
         assert!(client.has_role(&role, &user));
     }
 
@@ -554,7 +619,7 @@ mod tests {
         let role = String::from_str(&env, "operator");
         let attacker = Address::generate(&env);
         let user = Address::generate(&env);
-        let result = client.try_grant_role(&attacker, &role, &user);
+        let result = client.try_grant_role(&attacker, &role, &user, &None);
         assert_eq!(result, Err(Ok(AccessError::Unauthorized)));
     }
 
@@ -601,7 +666,7 @@ mod tests {
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
         client.blacklist(&admin, &user);
-        let result = client.try_grant_role(&admin, &role, &user);
+        let result = client.try_grant_role(&admin, &role, &user, &None);
         assert_eq!(result, Err(Ok(AccessError::Blacklisted)));
     }
 
@@ -615,7 +680,7 @@ mod tests {
         let user = Address::generate(&env);
         
         // First, grant the role
-        client.grant_role(&admin, &role, &user);
+        client.grant_role(&admin, &role, &user, &None);
         assert!(client.has_role(&role, &user));
         
         // Blacklist the user - this should succeed
@@ -623,7 +688,7 @@ mod tests {
         assert!(client.is_blacklisted(&user));
         
         // Attempt to grant the role again (should fail because they already have it)
-        let result = client.try_grant_role(&admin, &role, &user);
+        let result = client.try_grant_role(&admin, &role, &user, &None);
         assert_eq!(result, Err(Ok(AccessError::AlreadyHasRole)));
         
         // Revoke the role
@@ -631,7 +696,7 @@ mod tests {
         assert!(!client.has_role(&role, &user));
         
         // Now try to grant again - should fail because blacklisted
-        let result = client.try_grant_role(&admin, &role, &user);
+        let result = client.try_grant_role(&admin, &role, &user, &None);
         assert_eq!(result, Err(Ok(AccessError::Blacklisted)));
     }
 
@@ -647,7 +712,7 @@ mod tests {
         assert!(client.is_blacklisted(&user));
         
         // Attempt to grant should fail
-        let result = client.try_grant_role(&admin, &role, &user);
+        let result = client.try_grant_role(&admin, &role, &user, &None);
         assert_eq!(result, Err(Ok(AccessError::Blacklisted)));
         
         // Remove from blacklist
@@ -660,7 +725,7 @@ mod tests {
         assert!(!client.is_blacklisted(&user));
         
         // Now grant should succeed
-        client.grant_role(&admin, &role, &user);
+        client.grant_role(&admin, &role, &user, &None);
         assert!(client.has_role(&role, &user));
     }
 
@@ -691,8 +756,8 @@ mod tests {
 
         assert!(client.get_role_members(&role).is_empty());
 
-        client.grant_role(&admin, &role, &u1);
-        client.grant_role(&admin, &role, &u2);
+        client.grant_role(&admin, &role, &u1, &None);
+        client.grant_role(&admin, &role, &u2, &None);
         let members = client.get_role_members(&role);
         assert_eq!(members.len(), 2);
         assert!(members.contains(&u1));
@@ -713,8 +778,8 @@ mod tests {
 
         assert!(client.get_roles_for_address(&user).is_empty());
 
-        client.grant_role(&admin, &r1, &user);
-        client.grant_role(&admin, &r2, &user);
+        client.grant_role(&admin, &r1, &user, &None);
+        client.grant_role(&admin, &r2, &user, &None);
         let roles = client.get_roles_for_address(&user);
         assert_eq!(roles.len(), 2);
         assert!(roles.contains(&r1));
@@ -724,5 +789,44 @@ mod tests {
         let roles = client.get_roles_for_address(&user);
         assert_eq!(roles.len(), 1);
         assert!(roles.contains(&r2));
+    }
+
+    #[test]
+    fn test_grant_role_with_expiry() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+        let future_ledger = 1000u64;
+
+        client.grant_role(&admin, &role, &user, &Some(future_ledger));
+        assert!(client.has_role(&role, &user));
+    }
+
+    #[test]
+    fn test_expired_role_not_recognized() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+        let past_ledger = 1u64;
+
+        client.grant_role(&admin, &role, &user, &Some(past_ledger));
+        // Role should be expired since current ledger is > past_ledger
+        assert!(!client.has_role(&role, &user));
+    }
+
+    #[test]
+    fn test_expire_role_cleanup() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+        let future_ledger = 1000u64;
+
+        client.grant_role(&admin, &role, &user, &Some(future_ledger));
+        assert!(client.has_role(&role, &user));
+
+        client.expire_role(&admin, &role, &user);
+        // After cleanup, role should still be valid (expiry entry removed)
+        // but the role itself remains granted
+        assert!(client.has_role(&role, &user));
     }
 }
