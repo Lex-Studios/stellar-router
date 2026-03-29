@@ -11,7 +11,7 @@
 //! - Configurable per-route fees
 //! - Admin-controlled hook enable/disable
 
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Env, String, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Env, String, Symbol, Vec};
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
@@ -373,7 +373,7 @@ impl RouterMiddleware {
                     log = new_log;
                 }
 
-                env.storage().instance().set(&DataKey::CallLog(route), &log);
+                env.storage().instance().set(&DataKey::CallLog(route.clone()), &log);
             }
         }
 
@@ -611,7 +611,7 @@ impl RouterMiddleware {
 mod tests {
     extern crate std;
     use super::*;
-    use soroban_sdk::{testutils::{Address as _, Ledger}, Env, String};
+    use soroban_sdk::{testutils::{Address as _, Events, Ledger}, Env, IntoVal, String};
 
     fn setup() -> (Env, Address, RouterMiddlewareClient<'static>) {
         let env = Env::default();
@@ -630,7 +630,7 @@ mod tests {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "oracle/get_price");
         // Enable route with a rate limit of 5 calls per window
-        client.configure_route(&admin, &route, &5, &60, &true, &0, &0);
+        client.configure_route(&admin, &route, &5, &60, &true, &0, &0, &0);
 
         let caller = Address::generate(&env);
 
@@ -640,7 +640,7 @@ mod tests {
         assert_eq!(state_after_first.calls_in_window, 1);
 
         // Disable the route
-        client.configure_route(&admin, &route, &5, &60, &false, &0, &0);
+        client.configure_route(&admin, &route, &5, &60, &false, &0, &0, &0);
 
         // pre_call must be rejected — RouteDisabled
         assert_eq!(
@@ -656,7 +656,7 @@ mod tests {
         assert_eq!(client.total_calls(), 1);
 
         // Re-enable the route — no stale state should affect the next call
-        client.configure_route(&admin, &route, &5, &60, &true, &0, &0);
+        client.configure_route(&admin, &route, &5, &60, &true, &0, &0, &0);
         assert!(client.try_pre_call(&caller, &route).is_ok());
         let state_after_reenable = client.rate_limit_state(&route, &caller).unwrap();
         assert_eq!(state_after_reenable.calls_in_window, 2);
@@ -666,7 +666,7 @@ mod tests {
     fn test_global_disable_does_not_write_rate_limit_state() {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "oracle/get_price");
-        client.configure_route(&admin, &route, &5, &60, &true, &0, &0);
+        client.configure_route(&admin, &route, &5, &60, &true, &0, &0, &0);
 
         let caller = Address::generate(&env);
         // One successful call
@@ -796,7 +796,6 @@ mod tests {
     fn test_total_calls_not_incremented_on_rejected_pre_call() {
         let (env, admin, client) = setup();
         let route = String::from_str(&env, "oracle/get_price");
-        client.configure_route(&admin, &route, &1, &60, &true, &0, &0);
         client.configure_route(&admin, &route, &1, &60, &true, &0, &0, &0);
         
         let caller = Address::generate(&env);
