@@ -68,6 +68,7 @@ pub enum TimelockError {
     NotCriticalOp = 14,
     InvalidConfig = 15,
     InvalidTarget = 16,
+    InvalidDescription = 17,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -150,6 +151,10 @@ impl RouterTimelock {
 
         if delay < min_delay {
             return Err(TimelockError::InvalidDelay);
+        }
+
+        if description.len() == 0 {
+            return Err(TimelockError::InvalidDescription);
         }
 
         let op_id = Self::next_op_id(&env);
@@ -1286,5 +1291,26 @@ mod tests {
         // All 3 ops should be returned
         let all = client.get_ops_by_state(&false);
         assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_queue_empty_description_fails() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let deps = Vec::new(&env);
+        assert_eq!(
+            client.try_queue(&admin, &String::from_str(&env, ""), &target, &3600u64, &deps),
+            Err(Ok(TimelockError::InvalidDescription))
+        );
+    }
+
+    #[test]
+    fn test_queue_nonempty_description_succeeds() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let deps = Vec::new(&env);
+        assert!(
+            client.try_queue(&admin, &String::from_str(&env, "upgrade oracle"), &target, &3600u64, &deps).is_ok()
+        );
     }
 }
