@@ -279,6 +279,12 @@ impl RouterRegistry {
 
         let constraint_str = constraint.unwrap();
 
+        if versions.is_empty() {
+            return Err(RegistryError::NotFound);
+        }
+
+        let mut any_matching = false;
+
         // Iterate in reverse to find latest matching non-deprecated version
         let len = versions.len();
         let mut i = len;
@@ -291,10 +297,15 @@ impl RouterRegistry {
                 .get(&DataKey::Entry(name.clone(), v))
                 .ok_or(RegistryError::NotFound)?;
             if !entry.deprecated && Self::version_matches_constraint(v, &constraint_str)? {
+                any_matching = true;
                 return Ok(entry);
             }
         }
-        Err(RegistryError::NotFound)
+        if any_matching {
+            Err(RegistryError::AllVersionsDeprecated)
+        } else {
+            Err(RegistryError::NotFound)
+        }
     }
 
     /// Deprecate a specific version of a contract.
@@ -976,6 +987,36 @@ mod tests {
         assert!(result.is_ok());
         let entry = result.unwrap().unwrap();
         assert_eq!(entry.version, 2);
+    }
+
+    #[test]
+    fn test_constraint_all_deprecated_returns_all_deprecated() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register(&admin, &name, &addr, &1);
+        client.register(&admin, &name, &addr, &2);
+        client.register(&admin, &name, &addr, &3);
+        client.deprecate(&admin, &name, &1);
+        client.deprecate(&admin, &name, &2);
+        client.deprecate(&admin, &name, &3);
+
+        let constraint = String::from_str(&env, ">=1");
+        let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
+        assert_eq!(result, Err(Ok(RegistryError::AllVersionsDeprecated)));
+    }
+
+    #[test]
+    fn test_constraint_no_matching_version_returns_not_found() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let (a1, a2) = (Address::generate(&env), Address::generate(&env));
+        client.register(&admin, &name, &a1, &1);
+        client.register(&admin, &name, &a2, &2);
+
+        let constraint = String::from_str(&env, ">=5");
+        let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
+        assert_eq!(result, Err(Ok(RegistryError::NotFound)));
     }
 
     #[test]
