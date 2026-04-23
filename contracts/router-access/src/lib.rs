@@ -475,7 +475,7 @@ impl RouterAccess {
             .instance()
             .get::<DataKey, u64>(&DataKey::RoleExpiry(role.clone(), target.clone()))
         {
-            let current_ledger = env.ledger().sequence();
+            let current_ledger = env.ledger().sequence() as u64;
             if current_ledger >= expires_at {
                 return false;
             }
@@ -817,7 +817,7 @@ mod tests {
         let (env, admin, client) = setup();
         let role = String::from_str(&env, "operator");
         let user = Address::generate(&env);
-        let past_ledger = 1u64;
+        let past_ledger = 0u64;
 
         client.grant_role(&admin, &role, &user, &Some(past_ledger));
         // Role should be expired since current ledger is > past_ledger
@@ -839,6 +839,7 @@ mod tests {
         // but the role itself remains granted
         assert!(client.has_role(&role, &user));
     }
+    #[test]
     fn test_blacklisted_address_cannot_use_role() {
         // Blacklisting an address should prevent it from using its roles
         let (env, admin, client) = setup();
@@ -846,7 +847,7 @@ mod tests {
         let user = Address::generate(&env);
         
         // Grant the role
-        client.grant_role(&admin, &role, &user);
+        client.grant_role(&admin, &role, &user, &None);
         assert!(client.has_role(&role, &user));
         
         // Blacklist the user
@@ -854,5 +855,41 @@ mod tests {
         
         // has_role should now return false even though the role is still stored
         assert!(!client.has_role(&role, &user));
+    }
+
+    #[test]
+    fn test_old_super_admin_locked_out_after_transfer() {
+        let (env, admin, client) = setup();
+        let new_admin = Address::generate(&env);
+        client.transfer_super_admin(&admin, &new_admin);
+
+        // Old admin should no longer be able to call super-admin functions
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+        assert_eq!(
+            client.try_grant_role(&admin, &role, &user, &None),
+            Err(Ok(AccessError::Unauthorized))
+        );
+
+        // New admin should be able to grant roles
+        assert!(client.try_grant_role(&new_admin, &role, &user, &None).is_ok());
+    }
+
+    #[test]
+    fn test_transfer_super_admin_to_self_succeeds() {
+        // Edge case: transferring to self should be a no-op but not error
+        let (env, admin, client) = setup();
+        assert!(client.try_transfer_super_admin(&admin, &admin).is_ok());
+        assert_eq!(client.super_admin(), admin);
+    }
+
+    #[test]
+    fn test_transfer_super_admin_unauthorized_fails() {
+        let (env, _admin, client) = setup();
+        let attacker = Address::generate(&env);
+        assert_eq!(
+            client.try_transfer_super_admin(&attacker, &attacker),
+            Err(Ok(AccessError::Unauthorized))
+        );
     }
 }

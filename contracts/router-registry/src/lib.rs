@@ -12,6 +12,8 @@
 //! - Admin-controlled with ownership transfer
 
 use soroban_sdk::{contract, contractimpl, contracttype, contracterror, Address, Env, String, Symbol, Vec};
+extern crate alloc;
+use alloc::string::ToString;
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
@@ -763,7 +765,7 @@ mod tests {
         let constraint = String::from_str(&env, "2");
         let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
         assert!(result.is_ok());
-        let entry = result.unwrap();
+        let entry = result.unwrap().unwrap();
         assert_eq!(entry.version, 2);
     }
 
@@ -779,7 +781,7 @@ mod tests {
         let constraint = String::from_str(&env, ">=2");
         let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
         assert!(result.is_ok());
-        let entry = result.unwrap();
+        let entry = result.unwrap().unwrap();
         assert_eq!(entry.version, 3);
     }
 
@@ -795,7 +797,7 @@ mod tests {
         let constraint = String::from_str(&env, "<3");
         let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
         assert!(result.is_ok());
-        let entry = result.unwrap();
+        let entry = result.unwrap().unwrap();
         assert_eq!(entry.version, 2);
     }
 
@@ -811,7 +813,7 @@ mod tests {
         let constraint = String::from_str(&env, "^2");
         let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
         assert!(result.is_ok());
-        let entry = result.unwrap();
+        let entry = result.unwrap().unwrap();
         assert_eq!(entry.version, 2);
     }
 
@@ -841,7 +843,42 @@ mod tests {
         let constraint = String::from_str(&env, ">=2");
         let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
         assert!(result.is_ok());
-        let entry = result.unwrap();
+        let entry = result.unwrap().unwrap();
         assert_eq!(entry.version, 2);
     }
+
+    #[test]
+    fn test_get_latest_with_constraint_empty_registry() {
+        let (env, _admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let constraint = String::from_str(&env, ">=1");
+        let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
+        assert_eq!(result, Err(Ok(RegistryError::NotFound)));
+    }
+
+    #[test]
+    fn test_get_latest_with_constraint_invalid_constraint() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register(&admin, &name, &addr, &1);
+
+        let bad_constraint = String::from_str(&env, "abc");
+        let result = client.try_get_latest_with_constraint(&name, &Some(bad_constraint));
+        assert_eq!(result, Err(Ok(RegistryError::InvalidConstraint)));
+    }
+
+    #[test]
+    fn test_get_latest_with_constraint_none_behaves_like_get_latest() {
+        // Verifies the no-constraint path returns the same result as get_latest
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register(&admin, &name, &addr, &1);
+        let latest = client.get_latest(&name);
+        let constrained = client.get_latest_with_constraint(&name, &None);
+        assert_eq!(latest.version, constrained.version);
+        assert_eq!(latest.address, constrained.address);
+    }
 }
+
