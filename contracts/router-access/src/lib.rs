@@ -361,6 +361,7 @@ impl RouterAccess {
         if Self::is_blacklisted_internal(env, account) {
             return false;
         }
+
         let has_role = env
             .storage()
             .instance()
