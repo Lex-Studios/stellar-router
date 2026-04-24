@@ -1526,6 +1526,11 @@ mod tests {
         let (env, admin, client, m1, m2, _) = setup_with_council();
         let target = Address::generate(&env);
         let desc = String::from_str(&env, "critical fix");
+        let op_id = client.queue_critical(&admin, &desc, &target, &3600);
+        client.approve_critical(&m1, &op_id);
+        client.approve_critical(&m2, &op_id);
+        // Disable fast-track after approvals are collected
+        client.set_fast_track_enabled(&admin, &false);
         // Queue and fully approve while fast-track is still enabled
         let op_id = client.queue_critical(&admin, &desc, &target, &3600);
         client.approve_critical(&m1, &op_id);
@@ -1549,6 +1554,7 @@ mod tests {
         let op_id = client.queue_critical(&admin, &desc, &target, &3600);
         client.approve_critical(&m1, &op_id);
         client.approve_critical(&m2, &op_id);
+        // Fast-track is enabled by default after set_emergency_council
 
         // Fast-track is enabled by default — execution should succeed
         assert!(client.try_execute_critical(&admin, &op_id).is_ok());
