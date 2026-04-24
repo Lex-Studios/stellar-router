@@ -387,6 +387,15 @@ impl RouterTimelock {
         caller.require_auth();
         Self::require_admin(&env, &caller)?;
 
+        let enabled: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::FastTrackEnabled)
+            .unwrap_or(false);
+        if !enabled {
+            return Err(TimelockError::FastTrackDisabled);
+        }
+
         let mut op: TimelockOp = env
             .storage()
             .instance()
@@ -1349,6 +1358,35 @@ mod tests {
             client.try_queue_critical(&admin, &desc, &target, &3600),
             Err(Ok(TimelockError::FastTrackDisabled))
         );
+    }
+
+    #[test]
+    fn test_execute_critical_fails_when_fast_track_disabled() {
+        let (env, admin, client, m1, m2, _) = setup_with_council();
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "critical fix");
+        let op_id = client.queue_critical(&admin, &desc, &target, &3600);
+        client.approve_critical(&m1, &op_id);
+        client.approve_critical(&m2, &op_id);
+        // Disable fast-track after approvals are collected
+        client.set_fast_track_enabled(&admin, &false);
+        assert_eq!(
+            client.try_execute_critical(&admin, &op_id),
+            Err(Ok(TimelockError::FastTrackDisabled))
+        );
+    }
+
+    #[test]
+    fn test_execute_critical_succeeds_when_enabled() {
+        let (env, admin, client, m1, m2, _) = setup_with_council();
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "critical fix");
+        let op_id = client.queue_critical(&admin, &desc, &target, &3600);
+        client.approve_critical(&m1, &op_id);
+        client.approve_critical(&m2, &op_id);
+        // Fast-track is enabled by default after set_emergency_council
+        assert!(client.try_execute_critical(&admin, &op_id).is_ok());
+        assert!(client.get_op(&op_id).unwrap().executed);
     }
 
     #[test]
