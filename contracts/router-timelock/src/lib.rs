@@ -736,6 +736,24 @@ impl RouterTimelock {
             .unwrap_or(Vec::new(&env))
     }
 
+    /// Returns the dependency op IDs for the given operation.
+    ///
+    /// Returns the list of operation IDs that this operation depends on.
+    /// If the operation has no dependencies or doesn't exist, returns an empty vector.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `op_id` - The operation ID to get dependencies for.
+    ///
+    /// # Returns
+    /// A [`Vec<u64>`] of dependency operation IDs.
+    pub fn get_dependency_ids(env: Env, op_id: u64) -> Vec<u64> {
+        env.storage()
+            .instance()
+            .get::<DataKey, Vec<u64>>(&DataKey::OperationDeps(op_id))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
     /// Get all pending operations.
     ///
     /// Returns a list of all operations that are neither executed nor cancelled,
@@ -923,13 +941,17 @@ impl RouterTimelock {
     /// # Returns
     /// The [`Address`] of the current admin.
     ///
-    /// # Errors
-    /// * [`TimelockError::NotInitialized`] — if the contract has not been initialized.
-    pub fn admin(env: Env) -> Result<Address, TimelockError> {
+    /// # Panics
+    /// * Panics if the contract has not been initialized.
+    /// 
+    /// Note: This is a breaking change from the previous Result-based API.
+    /// Calling admin() on an uninitialized contract is considered a programming error
+    /// rather than a runtime condition, consistent with how similar getters work.
+    pub fn admin(env: Env) -> Address {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .ok_or(TimelockError::NotInitialized)
+            .expect("not initialized")
     }
 
     /// Transfer admin to a new address.
@@ -980,11 +1002,7 @@ impl RouterTimelock {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn require_admin(env: &Env, caller: &Address) -> Result<(), TimelockError> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(TimelockError::NotInitialized)?;
+        let admin = Self::admin(env.clone());
         if &admin != caller {
             return Err(TimelockError::Unauthorized);
         }
