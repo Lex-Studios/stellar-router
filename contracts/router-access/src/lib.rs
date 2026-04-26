@@ -837,6 +837,23 @@ mod tests {
     }
 
     #[test]
+    fn test_revoke_role_emits_event() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let user = Address::generate(&env);
+        client.grant_role(&admin, &user, &role, &None);
+        client.revoke_role(&admin, &role, &user);
+
+        let events = env.events().all();
+        let last = events.last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, Symbol::new(&env, "role_revoked"));
+        let (emitted_role, emitted_target): (String, Address) = last.2.into_val(&env);
+        assert_eq!(emitted_role, role);
+        assert_eq!(emitted_target, user);
+    }
+
+    #[test]
     fn test_get_role_members_excludes_expired_roles() {
         let (env, admin, client) = setup();
         let role = String::from_str(&env, "operator");
