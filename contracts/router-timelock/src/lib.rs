@@ -768,6 +768,24 @@ impl RouterTimelock {
     /// # Deprecated
     /// Use `get_ops_by_state(true)` instead.
     pub fn get_pending_ops(env: Env) -> Vec<TimelockOp> {
+        let next_id: u64 = env
+            .storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::NextOpId)
+            .unwrap_or(0);
+        let mut pending = Vec::new(&env);
+        for id in 0..next_id {
+            if let Some(op) = env
+                .storage()
+                .instance()
+                .get::<DataKey, TimelockOp>(&DataKey::Operation(id))
+            {
+                if !op.executed && !op.cancelled {
+                    pending.push_back(op);
+                }
+            }
+        }
+        pending
         Self::get_ops_by_state(env, true)
     }
 
@@ -1126,6 +1144,23 @@ mod tests {
             client.try_execute(&admin, &op_id),
             Err(Ok(TimelockError::TooEarly))
         );
+    }
+
+    #[test]
+    fn test_cancel_emits_event() {
+        let (env, admin, client) = setup();
+        let target = Address::generate(&env);
+        let desc = String::from_str(&env, "upgrade");
+        let deps = Vec::new(&env);
+        let op_id = client.queue(&admin, &desc, &target, &3600, &deps);
+        client.cancel(&admin, &op_id);
+
+        let events = env.events().all();
+        let last = events.last().unwrap();
+        let topic: Symbol = last.1.get(0).unwrap().into_val(&env);
+        assert_eq!(topic, Symbol::new(&env, "op_cancelled"));
+        let emitted_id: u64 = last.2.into_val(&env);
+        assert_eq!(emitted_id, op_id);
     }
 
     #[test]
@@ -1521,17 +1556,7 @@ mod tests {
         let op_id = client.queue_critical(&admin, &desc, &target, &3600);
         client.approve_critical(&m1, &op_id);
         client.approve_critical(&m2, &op_id);
-        // Disable fast-track after approvals are collected
         client.set_fast_track_enabled(&admin, &false);
-        // Queue and fully approve while fast-track is still enabled
-        let op_id = client.queue_critical(&admin, &desc, &target, &3600);
-        client.approve_critical(&m1, &op_id);
-        client.approve_critical(&m2, &op_id);
-
-        // Admin disables fast-track (e.g. council member compromised)
-        client.set_fast_track_enabled(&admin, &false);
-
-        // execute_critical must now be blocked
         assert_eq!(
             client.try_execute_critical(&admin, &op_id),
             Err(Ok(TimelockError::FastTrackDisabled))
