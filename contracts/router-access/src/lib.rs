@@ -210,6 +210,13 @@ impl RouterAccess {
         Ok(())
     }
 
+    /// Returns the role admin for the given role, or None if none is set.
+    pub fn get_role_admin(env: Env, role: String) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::RoleAdmin(role))
+    }
+
     /// Blacklist an address.
     pub fn blacklist(env: Env, caller: Address, target: Address) -> Result<(), AccessError> {
         caller.require_auth();
@@ -837,6 +844,25 @@ mod tests {
         let members_after = client.get_role_members(&role);
         assert!(!members_after.contains(&user));
         assert!(members_after.is_empty());
+    }
+
+    #[test]
+    fn test_get_role_admin_returns_address_after_set() {
+        let (env, admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+        let role_admin = Address::generate(&env);
+
+        client.set_role_admin(&admin, &role, &role_admin);
+
+        assert_eq!(client.get_role_admin(&role), Some(role_admin));
+    }
+
+    #[test]
+    fn test_get_role_admin_returns_none_when_not_set() {
+        let (env, _admin, client) = setup();
+        let role = String::from_str(&env, "operator");
+
+        assert_eq!(client.get_role_admin(&role), None);
     }
 
     #[test]
