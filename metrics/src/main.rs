@@ -33,6 +33,7 @@ mod metrics;
 mod rate_limit;
 mod rpc;
 mod server;
+mod validation;
 
 use anyhow::Result;
 use clap::Parser;
@@ -44,6 +45,7 @@ use logging::init_logging;
 use metrics::RouterMetrics;
 use rate_limit::{config_from_env, RateLimiter};
 use server::serve;
+use validation::{validate_contract_id, validate_listen_addr, validate_scrape_interval};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -52,6 +54,19 @@ async fn main() -> Result<()> {
 
     // ── CLI / env config ──────────────────────────────────────────────────────
     let args = Args::parse();
+
+    // ── Input validation ──────────────────────────────────────────────────────
+    validate_listen_addr(&args.listen)
+        .map_err(|e| anyhow::anyhow!("invalid listen address: {}", e.message))?;
+    validate_scrape_interval(args.scrape_interval_secs)
+        .map_err(|e| anyhow::anyhow!("invalid scrape interval: {}", e.message))?;
+    for id in [&args.core_contract_id, &args.middleware_contract_id, &args.registry_contract_id] {
+        if !id.is_empty() {
+            validate_contract_id(id)
+                .map_err(|e| anyhow::anyhow!("invalid contract ID: {}", e.message))?;
+        }
+    }
+
     info!(
         rpc_url = %args.rpc_url,
         listen = %args.listen,
