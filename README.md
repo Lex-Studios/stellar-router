@@ -43,6 +43,14 @@ composable, upgradeable, and access-controlled multi-contract systems on Soroban
 | `router-timelock` | Delayed execution queue for sensitive configuration changes | 7 |
 | `router-multicall` | Batch multiple cross-contract calls in one transaction | 6 |
 
+## Metrics & Monitoring
+
+| Component | Description |
+|---|---|
+| `router-metrics-exporter` | Prometheus/OpenTelemetry metrics exporter (off-chain binary) |
+
+The metrics exporter is an off-chain Rust binary that polls the Soroban RPC endpoint and exposes contract metrics in Prometheus format. See [`metrics/README.md`](metrics/README.md) for details.
+
 ## Architecture
 
 ### router-core
@@ -102,9 +110,21 @@ cargo build
 
 ### Test
 
+Run unit tests:
 ```bash
 cargo test
 ```
+
+Run integration tests on Stellar testnet:
+```bash
+# Quick start
+./scripts/run-integration-tests.sh
+
+# Or manually
+cargo test --test integration_tests -- --ignored --test-threads=1 --nocapture
+```
+
+See [INTEGRATION_TESTS.md](INTEGRATION_TESTS.md) for detailed integration test documentation.
 
 ### Build for Deployment (WASM)
 
@@ -157,6 +177,27 @@ stellar contract deploy \
   --wasm target/wasm32-unknown-unknown/release/router_core.wasm \
   --network testnet --source <your-account>
 ```
+
+### Metrics Exporter Deployment
+
+After deploying contracts, set up the metrics exporter to monitor them:
+
+```bash
+cd metrics
+
+# Configure contract IDs
+export ROUTER_CORE_CONTRACT_ID="<your-core-contract-id>"
+export ROUTER_MIDDLEWARE_CONTRACT_ID="<your-middleware-contract-id>"
+export ROUTER_REGISTRY_CONTRACT_ID="<your-registry-contract-id>"
+
+# Run the exporter
+cargo run --release
+
+# Or use Docker Compose (includes Prometheus + Grafana)
+docker-compose up -d
+```
+
+See [`metrics/README.md`](metrics/README.md) for full deployment instructions.
 
 ## Example Usage
 
