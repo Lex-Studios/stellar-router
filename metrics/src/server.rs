@@ -7,8 +7,9 @@
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{header, StatusCode},
+    middleware,
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -17,6 +18,8 @@ use prometheus::{Encoder, Registry, TextEncoder};
 use std::net::SocketAddr;
 use tracing::info;
 
+use crate::rate_limit::{rate_limit_middleware, RateLimiter};
+
 /// Shared server state.
 #[derive(Clone)]
 struct AppState {
@@ -24,7 +27,7 @@ struct AppState {
 }
 
 /// Start the HTTP server and block until it exits.
-pub async fn serve(listen: String, registry: Registry) -> Result<()> {
+pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> Result<()> {
     let addr: SocketAddr = listen
         .parse()
         .with_context(|| format!("invalid listen address: {listen}"))?;
@@ -35,7 +38,12 @@ pub async fn serve(listen: String, registry: Registry) -> Result<()> {
         .route("/metrics", get(metrics_handler))
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
-        .with_state(state);
+        .layer(middleware::from_fn_with_state(
+            limiter,
+            rate_limit_middleware,
+        ))
+        .with_state(state)
+        .into_make_service_with_connect_info::<SocketAddr>();
 
     info!(%addr, "HTTP server listening");
     let listener = tokio::net::TcpListener::bind(addr)
