@@ -735,6 +735,23 @@ impl RouterCore {
         Self::get_route_names(&env)
     }
 
+    /// Returns the canonical route name that `alias_name` points to, or `None`.
+    ///
+    /// This is a read-only lookup that does not increment `total_routed` and
+    /// does not fail when the router or route is paused.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `alias_name` - The alias name to look up.
+    ///
+    /// # Returns
+    /// `Some(canonical_name)` if `alias_name` is a registered alias, `None` otherwise.
+    pub fn get_alias_target(env: Env, alias_name: String) -> Option<String> {
+        env.storage()
+            .instance()
+            .get::<DataKey, String>(&DataKey::Alias(alias_name))
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn require_admin(env: &Env, caller: &Address) -> Result<(), RouterError> {
@@ -1783,5 +1800,23 @@ mod tests {
         let attacker = Address::generate(&env);
         let result = client.try_update_metadata(&attacker, &name, &None);
         assert_eq!(result, Err(Ok(RouterError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_get_alias_target_returns_canonical_name() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let alias = String::from_str(&env, "oracle_v1");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr, &None);
+        client.add_alias(&admin, &name, &alias);
+        assert_eq!(client.get_alias_target(&alias), Some(name));
+    }
+
+    #[test]
+    fn test_get_alias_target_returns_none_for_non_alias() {
+        let (env, _admin, client) = setup();
+        let name = String::from_str(&env, "not_an_alias");
+        assert_eq!(client.get_alias_target(&name), None);
     }
 }
