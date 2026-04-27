@@ -4,19 +4,27 @@
 //! - `GET /metrics` — Prometheus text format metrics
 //! - `GET /health`  — simple liveness probe (returns `200 OK`)
 //! - `GET /ready`   — readiness probe (returns `200 OK` if router_up == 1, `503` otherwise)
+//!
+//! Every request is assigned a unique `request_id` that is logged and returned
+//! in the `X-Request-Id` response header.
 
 use anyhow::{Context, Result};
 use axum::{
     extract::{ConnectInfo, State},
     http::{header, StatusCode},
     middleware,
+    extract::State,
+    http::{header, HeaderValue, Request, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
     Router,
 };
 use prometheus::{Encoder, Registry, TextEncoder};
 use std::net::SocketAddr;
-use tracing::info;
+use tracing::{info, info_span, Instrument};
+
+use crate::logging::new_request_id;
 
 use crate::rate_limit::{rate_limit_middleware, RateLimiter};
 
@@ -44,6 +52,8 @@ pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> 
         ))
         .with_state(state)
         .into_make_service_with_connect_info::<SocketAddr>();
+        .layer(middleware::from_fn(request_id_middleware))
+        .with_state(state);
 
     info!(%addr, "HTTP server listening");
     let listener = tokio::net::TcpListener::bind(addr)
@@ -55,6 +65,36 @@ pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> 
         .context("HTTP server error")?;
 
     Ok(())
+}
+
+// ── Middleware ────────────────────────────────────────────────────────────────
+
+/// Attach a unique `request_id` to every request span and response header.
+async fn request_id_middleware(req: Request<axum::body::Body>, next: Next) -> Response {
+    let request_id = new_request_id();
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+
+    let span = info_span!(
+        "http_request",
+        request_id = %request_id,
+        method = %method,
+        uri = %uri,
+    );
+
+    async move {
+        info!(request_id = %request_id, %method, %uri, "incoming request");
+        let mut response = next.run(req).await;
+        let status = response.status().as_u16();
+        info!(request_id = %request_id, status, "request complete");
+
+        if let Ok(val) = HeaderValue::from_str(&request_id) {
+            response.headers_mut().insert("x-request-id", val);
+        }
+        response
+    }
+    .instrument(span)
+    .await
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
