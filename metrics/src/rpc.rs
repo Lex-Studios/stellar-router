@@ -6,6 +6,7 @@
 //! requires `wasm32` toolchain features and complicates native builds).
 
 use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -335,6 +336,175 @@ pub fn instance_storage_key_xdr(_contract_id: &str) -> Result<String> {
         "Direct XDR key construction not implemented. \
          Use the simulation path or integrate stellar-xdr."
     ))
+}
+
+// ── RpcClient trait ───────────────────────────────────────────────────────────
+
+/// Trait abstracting the Soroban RPC calls used by the collector.
+///
+/// Implement this trait with [`MockRpcClient`] in tests to avoid live network
+/// access, or use the real [`SorobanRpcClient`] in production.
+#[async_trait::async_trait]
+pub trait RpcClient: Send + Sync {
+    async fn call_u64(&self, contract_id: &str, function_name: &str) -> Result<u64>;
+    async fn call_bool(&self, contract_id: &str, function_name: &str) -> Result<bool>;
+    async fn call_string_vec(
+        &self,
+        contract_id: &str,
+        function_name: &str,
+    ) -> Result<Vec<String>>;
+    async fn simulate_invoke(
+        &self,
+        contract_id: &str,
+        function_name: &str,
+        args_xdr: Vec<String>,
+    ) -> Result<serde_json::Value>;
+}
+
+#[async_trait::async_trait]
+impl RpcClient for SorobanRpcClient {
+    async fn call_u64(&self, contract_id: &str, function_name: &str) -> Result<u64> {
+        self.call_u64(contract_id, function_name).await
+    }
+    async fn call_bool(&self, contract_id: &str, function_name: &str) -> Result<bool> {
+        self.call_bool(contract_id, function_name).await
+    }
+    async fn call_string_vec(
+        &self,
+        contract_id: &str,
+        function_name: &str,
+    ) -> Result<Vec<String>> {
+        self.call_string_vec(contract_id, function_name).await
+    }
+    async fn simulate_invoke(
+        &self,
+        contract_id: &str,
+        function_name: &str,
+        args_xdr: Vec<String>,
+    ) -> Result<serde_json::Value> {
+        self.simulate_invoke(contract_id, function_name, args_xdr)
+            .await
+    }
+}
+
+// ── MockRpcClient ─────────────────────────────────────────────────────────────
+
+/// A deterministic mock RPC client for use in tests.
+///
+/// Pre-load responses via the builder methods; any call not explicitly
+/// configured returns an error so tests fail loudly on unexpected calls.
+///
+/// # Example
+/// ```rust
+/// let mock = MockRpcClient::new()
+///     .with_u64("CONTRACT", "total_routed", 42)
+///     .with_string_vec("CONTRACT", "get_all_routes", vec![]);
+/// ```
+#[cfg(any(test, feature = "test-utils"))]
+pub struct MockRpcClient {
+    u64_responses: std::collections::HashMap<(String, String), u64>,
+    bool_responses: std::collections::HashMap<(String, String), bool>,
+    string_vec_responses: std::collections::HashMap<(String, String), Vec<String>>,
+    simulate_responses:
+        std::collections::HashMap<(String, String), serde_json::Value>,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl MockRpcClient {
+    pub fn new() -> Self {
+        Self {
+            u64_responses: Default::default(),
+            bool_responses: Default::default(),
+            string_vec_responses: Default::default(),
+            simulate_responses: Default::default(),
+        }
+    }
+
+    pub fn with_u64(mut self, contract: &str, func: &str, val: u64) -> Self {
+        self.u64_responses
+            .insert((contract.to_string(), func.to_string()), val);
+        self
+    }
+
+    pub fn with_bool(mut self, contract: &str, func: &str, val: bool) -> Self {
+        self.bool_responses
+            .insert((contract.to_string(), func.to_string()), val);
+        self
+    }
+
+    pub fn with_string_vec(mut self, contract: &str, func: &str, val: Vec<String>) -> Self {
+        self.string_vec_responses
+            .insert((contract.to_string(), func.to_string()), val);
+        self
+    }
+
+    pub fn with_simulate(
+        mut self,
+        contract: &str,
+        func: &str,
+        val: serde_json::Value,
+    ) -> Self {
+        self.simulate_responses
+            .insert((contract.to_string(), func.to_string()), val);
+        self
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[async_trait::async_trait]
+impl RpcClient for MockRpcClient {
+    async fn call_u64(&self, contract_id: &str, function_name: &str) -> Result<u64> {
+        self.u64_responses
+            .get(&(contract_id.to_string(), function_name.to_string()))
+            .copied()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "MockRpcClient: no u64 response for {contract_id}::{function_name}"
+                )
+            })
+    }
+
+    async fn call_bool(&self, contract_id: &str, function_name: &str) -> Result<bool> {
+        self.bool_responses
+            .get(&(contract_id.to_string(), function_name.to_string()))
+            .copied()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "MockRpcClient: no bool response for {contract_id}::{function_name}"
+                )
+            })
+    }
+
+    async fn call_string_vec(
+        &self,
+        contract_id: &str,
+        function_name: &str,
+    ) -> Result<Vec<String>> {
+        self.string_vec_responses
+            .get(&(contract_id.to_string(), function_name.to_string()))
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "MockRpcClient: no string_vec response for {contract_id}::{function_name}"
+                )
+            })
+    }
+
+    async fn simulate_invoke(
+        &self,
+        contract_id: &str,
+        function_name: &str,
+        _args_xdr: Vec<String>,
+    ) -> Result<serde_json::Value> {
+        self.simulate_responses
+            .get(&(contract_id.to_string(), function_name.to_string()))
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "MockRpcClient: no simulate response for {contract_id}::{function_name}"
+                )
+            })
+    }
 }
 
 #[cfg(test)]
