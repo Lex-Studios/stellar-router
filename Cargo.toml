@@ -1,5 +1,4 @@
 [workspace]
-name = "stellar-router"
 resolver = "2"
 members = [
     "contracts/router-common",
@@ -9,6 +8,8 @@ members = [
     "contracts/router-middleware",
     "contracts/router-timelock",
     "contracts/router-multicall",
+    "metrics",
+    "integration-tests",
 ]
 
 [workspace.dependencies]

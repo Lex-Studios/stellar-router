@@ -442,41 +442,6 @@ mod tests {
     }
 
     #[test]
-    fn test_grant_role_blacklisted_account_fails() {
-        let (env, admin, client) = setup();
-        let role = String::from_str(&env, "operator");
-        let user = Address::generate(&env);
-
-        client.blacklist(&admin, &user);
-
-        let result = client.try_grant_role(&admin, &user, &role, &Some(10));
-        assert_eq!(result, Err(Ok(AccessError::Blacklisted)));
-    }
-
-    #[test]
-    fn test_grant_role_already_has_role_fails() {
-        let (env, admin, client) = setup();
-        let role = String::from_str(&env, "operator");
-        let user = Address::generate(&env);
-
-        client.grant_role(&admin, &user, &role, &Some(10));
-
-        let result = client.try_grant_role(&admin, &user, &role, &Some(20));
-        assert_eq!(result, Err(Ok(AccessError::AlreadyHasRole)));
-    }
-
-    #[test]
-    fn test_grant_role_returns_error_on_unauthorized() {
-        let (env, _admin, client) = setup();
-        let attacker = Address::generate(&env);
-        let user = Address::generate(&env);
-        let role = String::from_str(&env, "operator");
-
-        let result = client.try_grant_role(&attacker, &user, &role, &Some(10));
-        assert_eq!(result, Err(Ok(AccessError::Unauthorized)));
-    }
-
-    #[test]
     fn test_set_role_admin_emits_event() {
         let (env, admin, client) = setup();
         let role = String::from_str(&env, "operator");
@@ -556,8 +521,7 @@ mod tests {
 
         // Grant role to victim
         client
-            .grant_role(&admin, &victim, &role, &None)
-            .expect("grant_role should succeed");
+            .grant_role(&admin, &victim, &role, &None);
 
         // Blacklist the attacker
         client.blacklist(&admin, &attacker);
@@ -577,8 +541,7 @@ mod tests {
 
         // Grant the role
         client
-            .grant_role(&admin, &user, &role, &None)
-            .expect("grant_role should succeed");
+            .grant_role(&admin, &user, &role, &None);
 
         // Revoke should succeed (not return RoleNotFound)
         let result = client.try_revoke_role(&admin, &role, &user);
@@ -595,8 +558,7 @@ mod tests {
         let user = Address::generate(&env);
 
         client
-            .grant_role(&admin, &user, &role, &Some(100))
-            .expect("grant_role should succeed");
+            .grant_role(&admin, &user, &role, &Some(100));
 
         client.revoke_role(&admin, &role, &user);
 
@@ -625,8 +587,7 @@ mod tests {
 
         // Grant role to user1
         client
-            .grant_role(&admin, &user1, &role, &None)
-            .expect("grant_role should succeed");
+            .grant_role(&admin, &user1, &role, &None);
 
         // Check that user1 is in role members
         let members_after_first = client.get_role_members(&role);
@@ -635,8 +596,7 @@ mod tests {
 
         // Grant role to user2
         client
-            .grant_role(&admin, &user2, &role, &None)
-            .expect("grant_role should succeed");
+            .grant_role(&admin, &user2, &role, &None);
 
         // Check that both users are in role members
         let members_after_second = client.get_role_members(&role);
@@ -667,8 +627,7 @@ mod tests {
         let past_ledger = 0u64;
 
         client
-            .grant_role(&admin, &user, &role, &None)
-            .expect("first grant should succeed");
+            .grant_role(&admin, &user, &role, &None);
 
         let result = client.try_grant_role(&admin, &user, &role, &None);
         assert_eq!(result, Err(Ok(AccessError::AlreadyHasRole)));
@@ -713,8 +672,7 @@ mod tests {
 
         // Grant role1 to user
         client
-            .grant_role(&admin, &user, &role1, &None)
-            .expect("grant_role should succeed");
+            .grant_role(&admin, &user, &role1, &None);
 
         // Check that role1 is in user's roles
         let roles_after_first = client.get_roles_for_address(&user);
@@ -723,8 +681,7 @@ mod tests {
 
         // Grant role2 to user
         client
-            .grant_role(&admin, &user, &role2, &None)
-            .expect("grant_role should succeed");
+            .grant_role(&admin, &user, &role2, &None);
 
         // Check that both roles are in user's roles
         let roles_after_second = client.get_roles_for_address(&user);

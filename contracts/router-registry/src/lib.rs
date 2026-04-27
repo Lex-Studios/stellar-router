@@ -308,13 +308,6 @@ impl RouterRegistry {
                 return Ok(entry);
             }
         }
-        if matched_constraint {
-                any_constraint_match = true;
-                if !entry.deprecated {
-                    return Ok(entry);
-                }
-            }
-        }
         if any_constraint_match {
             Err(RegistryError::AllVersionsDeprecated)
         } else {
@@ -376,14 +369,14 @@ impl RouterRegistry {
         env: Env,
         caller: Address,
         entries: Vec<(String, u32)>,
-    ) -> Vec<Result<(), RegistryError>> {
+    ) -> Result<Vec<Result<(), RegistryError>>, RegistryError> {
         caller.require_auth();
         Self::require_admin(&env, &caller)?;
         let mut results = Vec::new(&env);
         for (name, version) in entries.iter() {
             results.push_back(Self::deprecate_one(&env, name, version));
         }
-        results
+        Ok(results)
     }
 
     /// Transfer admin to a new address.
@@ -519,7 +512,7 @@ impl RouterRegistry {
             for v in versions.iter() {
                 if let Some(entry) = env.storage()
                     .instance()
-                    .get::<ContractEntry>(&DataKey::Entry(name.clone(), *v))
+                    .get::<DataKey, ContractEntry>(&DataKey::Entry(name.clone(), v))
                 {
                     if entry.address == address {
                         return Some(entry);
@@ -1043,6 +1036,15 @@ mod tests {
         client.register(&admin, &name, &a1, &1);
         client.register(&admin, &name, &a2, &2);
         client.register(&admin, &name, &a3, &3);
+        client.deprecate(&admin, &name, &1);
+        client.deprecate(&admin, &name, &2);
+        client.deprecate(&admin, &name, &3);
+        let constraint = String::from_str(&env, ">=1");
+        let result = client.try_get_latest_with_constraint(&name, &Some(constraint));
+        assert_eq!(result, Err(Ok(RegistryError::AllVersionsDeprecated)));
+    }
+
+    #[test]
     fn test_get_latest_with_constraint_empty_registry() {
         let (env, _admin, client) = setup();
         let name = String::from_str(&env, "oracle");
