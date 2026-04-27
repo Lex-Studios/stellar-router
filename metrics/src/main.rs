@@ -30,6 +30,7 @@ mod cli;
 mod collector;
 mod logging;
 mod metrics;
+mod rate_limit;
 mod rpc;
 mod server;
 
@@ -41,6 +42,7 @@ use cli::Args;
 use collector::Collector;
 use logging::init_logging;
 use metrics::RouterMetrics;
+use rate_limit::{config_from_env, RateLimiter};
 use server::serve;
 
 #[tokio::main]
@@ -68,5 +70,6 @@ async fn main() -> Result<()> {
     });
 
     // ── HTTP server ───────────────────────────────────────────────────────────
-    serve(args.listen, registry).await
+    let limiter = RateLimiter::new(config_from_env());
+    serve(args.listen, registry, limiter).await
 }

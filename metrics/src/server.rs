@@ -10,6 +10,9 @@
 
 use anyhow::{Context, Result};
 use axum::{
+    extract::{ConnectInfo, State},
+    http::{header, StatusCode},
+    middleware,
     extract::State,
     http::{header, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
@@ -23,6 +26,8 @@ use tracing::{info, info_span, Instrument};
 
 use crate::logging::new_request_id;
 
+use crate::rate_limit::{rate_limit_middleware, RateLimiter};
+
 /// Shared server state.
 #[derive(Clone)]
 struct AppState {
@@ -30,7 +35,7 @@ struct AppState {
 }
 
 /// Start the HTTP server and block until it exits.
-pub async fn serve(listen: String, registry: Registry) -> Result<()> {
+pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> Result<()> {
     let addr: SocketAddr = listen
         .parse()
         .with_context(|| format!("invalid listen address: {listen}"))?;
@@ -41,6 +46,12 @@ pub async fn serve(listen: String, registry: Registry) -> Result<()> {
         .route("/metrics", get(metrics_handler))
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
+        .layer(middleware::from_fn_with_state(
+            limiter,
+            rate_limit_middleware,
+        ))
+        .with_state(state)
+        .into_make_service_with_connect_info::<SocketAddr>();
         .layer(middleware::from_fn(request_id_middleware))
         .with_state(state);
 
