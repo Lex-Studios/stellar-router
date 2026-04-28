@@ -3,6 +3,9 @@ mod state;
 mod types;
 mod websocket;
 
+#[cfg(test)]
+mod tests;
+
 use anyhow::{Context, Result};
 use axum::{
     extract::DefaultBodyLimit,
