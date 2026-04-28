@@ -28,6 +28,7 @@ use crate::logging::new_request_id;
 use crate::openapi::ApiDoc;
 use crate::rate_limit::{rate_limit_middleware, RateLimiter};
 use crate::auth::AuthConfig;
+use crate::replay_protection::{NonceCache, ReplayProtectionConfig};
 
 /// Shared server state.
 #[derive(Clone)]
@@ -43,6 +44,8 @@ pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> 
 
     let state = AppState { registry };
     let auth_config = AuthConfig::from_env();
+    let replay_config = ReplayProtectionConfig::from_env();
+    let nonce_cache = NonceCache::new(replay_config);
 
     let app = Router::new()
         .route("/metrics", get(metrics_handler))
@@ -52,6 +55,10 @@ pub async fn serve(listen: String, registry: Registry, limiter: RateLimiter) -> 
         .layer(middleware::from_fn_with_state(
             limiter,
             rate_limit_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            nonce_cache,
+            crate::replay_protection::replay_protection_middleware,
         ))
         .layer(middleware::from_fn_with_state(
             auth_config,

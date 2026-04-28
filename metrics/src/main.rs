@@ -33,6 +33,7 @@ mod logging;
 mod metrics;
 mod openapi;
 mod rate_limit;
+mod replay_protection;
 mod rpc;
 mod server;
 mod validation;
