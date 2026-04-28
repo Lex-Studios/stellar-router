@@ -30,6 +30,7 @@ mod cli;
 mod collector;
 mod logging;
 mod metrics;
+mod openapi;
 mod rate_limit;
 mod rpc;
 mod server;
