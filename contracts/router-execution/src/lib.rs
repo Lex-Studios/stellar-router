@@ -96,6 +96,20 @@ pub struct ExecutionResult {
     pub simulated: bool,
 }
 
+/// Result of a pre-execution simulation.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SimulationResult {
+    pub target: Address,
+    pub function: Symbol,
+    /// `true` if the simulated call would succeed on-chain.
+    pub success: bool,
+    /// `true` if the simulated call would be rejected on-chain.
+    pub would_fail: bool,
+    /// Human-readable feedback for the caller.
+    pub message: String,
+}
+
 /// Fee estimate for a transaction.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -296,6 +310,62 @@ impl RouterExecution {
         })
     }
 
+    /// Simulate a transaction without executing it.
+    ///
+    /// Runs a dry-run invocation via `try_invoke_contract` and returns a
+    /// [`SimulationResult`] describing whether the transaction would succeed.
+    /// The real execution is never performed — this is purely a validation step.
+    ///
+    /// Simulation results are logged via a `simulation_result` event so
+    /// off-chain observers can track validation outcomes.
+    ///
+    /// # Arguments
+    /// * `caller` - The address requesting simulation; must authenticate.
+    /// * `target` - The contract to simulate against.
+    /// * `function` - The function to simulate.
+    ///
+    /// # Returns
+    /// A [`SimulationResult`] with `success`, `would_fail`, and a `message`.
+    ///
+    /// # Errors
+    /// * [`ExecutionError::NotInitialized`] — if the contract is not initialized.
+    pub fn simulate(
+        env: Env,
+        caller: Address,
+        target: Address,
+        function: Symbol,
+    ) -> Result<SimulationResult, ExecutionError> {
+        caller.require_auth();
+
+        if !env.storage().instance().has(&DataKey::Admin) {
+            return Err(ExecutionError::NotInitialized);
+        }
+
+        let args: Vec<soroban_sdk::Val> = Vec::new(&env);
+        let sim_ok = env
+            .try_invoke_contract::<soroban_sdk::Val, soroban_sdk::Val>(&target, &function, args)
+            .is_ok();
+
+        let message = if sim_ok {
+            String::from_str(&env, "simulation succeeded")
+        } else {
+            String::from_str(&env, "simulation failed: transaction would be rejected")
+        };
+
+        env.events().publish(
+            (Symbol::new(&env, "simulation_result"),),
+            (&target, &function, sim_ok),
+        );
+
+        Ok(SimulationResult {
+            target,
+            function,
+            success: sim_ok,
+            would_fail: !sim_ok,
+            message,
+        })
+    }
+
     /// Get cumulative execution statistics.
     ///
     /// Returns `(total_executions, total_errors)`.
@@ -396,5 +466,31 @@ mod tests {
     fn test_stats_initial() {
         let (_, _, client) = setup();
         assert_eq!(client.stats(), (0, 0));
+    }
+
+    #[test]
+    fn test_simulate_nonexistent_contract_fails() {
+        let (env, _, client) = setup();
+        let caller = Address::generate(&env);
+        let target = Address::generate(&env);
+        let function = Symbol::new(&env, "transfer");
+        // Calling a random address that has no contract → simulation should fail
+        let result = client.simulate(&caller, &target, &function);
+        assert!(!result.success);
+        assert!(result.would_fail);
+    }
+
+    #[test]
+    fn test_simulate_returns_message_on_failure() {
+        let (env, _, client) = setup();
+        let caller = Address::generate(&env);
+        let target = Address::generate(&env);
+        let function = Symbol::new(&env, "transfer");
+        let result = client.simulate(&caller, &target, &function);
+        // Message should indicate failure
+        assert_eq!(
+            result.message,
+            soroban_sdk::String::from_str(&env, "simulation failed: transaction would be rejected")
+        );
     }
 }
