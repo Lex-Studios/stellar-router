@@ -29,6 +29,7 @@ pub enum DataKey {
     TotalRouted,
     Alias(String), // alias -> original_name
     Aliases,       // Vec<String> of all alias names
+    Score(String), // name -> RouteScore
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -57,6 +58,22 @@ pub struct RouteEntry {
     pub updated_by: Address,
     /// Optional metadata for the route
     pub metadata: Option<RouteMetadata>,
+}
+
+/// Scoring attributes for a route used in path selection.
+///
+/// Higher scores indicate more preferred routes. The composite score is
+/// computed as: `liquidity_score + reliability_score - fee_bps / 10`.
+/// All fields are set by the admin and reflect off-chain measurements.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RouteScore {
+    /// Liquidity depth score (0–100). Higher = more liquid.
+    pub liquidity_score: u32,
+    /// Fee rate in basis points (e.g., 30 = 0.30%). Lower = cheaper.
+    pub fee_bps: u32,
+    /// Historical reliability score (0–100). Higher = more reliable.
+    pub reliability_score: u32,
 }
 
 // ── Errors ────────────────────────────────────────────────────────────────────
@@ -750,6 +767,126 @@ impl RouterCore {
         env.storage()
             .instance()
             .get::<DataKey, String>(&DataKey::Alias(alias_name))
+    }
+
+    /// Set or update the scoring attributes for a route.
+    ///
+    /// Scores are used by [`get_best_route`] to select the optimal path from a
+    /// set of candidates. Caller must be the admin.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `caller` - Must be the admin.
+    /// * `name` - The route to score.
+    /// * `score` - The [`RouteScore`] to associate with this route.
+    ///
+    /// # Errors
+    /// * [`RouterError::Unauthorized`] — if `caller` is not the admin.
+    /// * [`RouterError::RouteNotFound`] — if the route does not exist.
+    /// * [`RouterError::NotInitialized`] — if the contract is not initialized.
+    pub fn set_route_score(
+        env: Env,
+        caller: Address,
+        name: String,
+        score: RouteScore,
+    ) -> Result<(), RouterError> {
+        caller.require_auth();
+        Self::require_admin(&env, &caller)?;
+
+        if !env.storage().instance().has(&DataKey::Route(name.clone())) {
+            return Err(RouterError::RouteNotFound);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Score(name.clone()), &score);
+
+        env.events().publish(
+            (Symbol::new(&env, "route_scored"),),
+            (name, score.liquidity_score, score.fee_bps, score.reliability_score),
+        );
+
+        Ok(())
+    }
+
+    /// Get the score for a route.
+    ///
+    /// Returns `None` if no score has been set for the route.
+    pub fn get_route_score(env: Env, name: String) -> Option<RouteScore> {
+        env.storage().instance().get(&DataKey::Score(name))
+    }
+
+    /// Select the best route from a list of candidates.
+    ///
+    /// Evaluates each candidate route using a composite score:
+    /// `liquidity_score + reliability_score - fee_bps / 10`
+    ///
+    /// Routes that are paused or have no score are skipped. Returns the name
+    /// of the highest-scoring available route.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `candidates` - A list of route names to evaluate.
+    ///
+    /// # Returns
+    /// The name of the best route, or `None` if no scoreable, unpaused route exists.
+    ///
+    /// # Errors
+    /// * [`RouterError::RouterPaused`] — if the entire router is paused.
+    pub fn get_best_route(env: Env, candidates: Vec<String>) -> Result<Option<String>, RouterError> {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        if paused {
+            return Err(RouterError::RouterPaused);
+        }
+
+        let mut best_name: Option<String> = None;
+        let mut best_score: i64 = -1;
+
+        for name in candidates.iter() {
+            // Skip paused routes
+            let entry: Option<RouteEntry> = env
+                .storage()
+                .instance()
+                .get(&DataKey::Route(name.clone()));
+            let entry = match entry {
+                Some(e) if !e.paused => e,
+                _ => continue,
+            };
+            let _ = entry; // entry validated, not needed further
+
+            // Skip routes without a score
+            let score: RouteScore = match env
+                .storage()
+                .instance()
+                .get(&DataKey::Score(name.clone()))
+            {
+                Some(s) => s,
+                None => continue,
+            };
+
+            // Composite score: liquidity + reliability - fee_bps/10
+            let composite: i64 = score.liquidity_score as i64
+                + score.reliability_score as i64
+                - (score.fee_bps as i64 / 10);
+
+            if composite > best_score {
+                best_score = composite;
+                best_name = Some(name.clone());
+            }
+        }
+
+        if let Some(ref name) = best_name {
+            env.events().publish(
+                (Symbol::new(&env, "best_route_selected"),),
+                (name.clone(), best_score),
+            );
+        }
+
+        Ok(best_name)
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -1818,5 +1955,97 @@ mod tests {
         let (env, _admin, client) = setup();
         let name = String::from_str(&env, "not_an_alias");
         assert_eq!(client.get_alias_target(&name), None);
+    }
+
+    // ── Route scoring / path selection tests (#330) ───────────────────────────
+
+    #[test]
+    fn test_set_and_get_route_score() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "oracle");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &name, &addr, &None);
+
+        let score = RouteScore { liquidity_score: 80, fee_bps: 30, reliability_score: 90 };
+        client.set_route_score(&admin, &name, &score);
+
+        let retrieved = client.get_route_score(&name).unwrap();
+        assert_eq!(retrieved.liquidity_score, 80);
+        assert_eq!(retrieved.fee_bps, 30);
+        assert_eq!(retrieved.reliability_score, 90);
+    }
+
+    #[test]
+    fn test_set_route_score_nonexistent_fails() {
+        let (env, admin, client) = setup();
+        let name = String::from_str(&env, "ghost");
+        let score = RouteScore { liquidity_score: 50, fee_bps: 10, reliability_score: 50 };
+        let result = client.try_set_route_score(&admin, &name, &score);
+        assert_eq!(result, Err(Ok(RouterError::RouteNotFound)));
+    }
+
+    #[test]
+    fn test_get_best_route_selects_highest_score() {
+        let (env, admin, client) = setup();
+        let r1 = String::from_str(&env, "route_a");
+        let r2 = String::from_str(&env, "route_b");
+        let r3 = String::from_str(&env, "route_c");
+        let addr = Address::generate(&env);
+
+        client.register_route(&admin, &r1, &addr, &None);
+        client.register_route(&admin, &r2, &addr, &None);
+        client.register_route(&admin, &r3, &addr, &None);
+
+        // route_a: 50 + 70 - 30/10 = 117
+        client.set_route_score(&admin, &r1, &RouteScore { liquidity_score: 50, fee_bps: 30, reliability_score: 70 });
+        // route_b: 90 + 95 - 10/10 = 184  ← best
+        client.set_route_score(&admin, &r2, &RouteScore { liquidity_score: 90, fee_bps: 10, reliability_score: 95 });
+        // route_c: 60 + 60 - 50/10 = 115
+        client.set_route_score(&admin, &r3, &RouteScore { liquidity_score: 60, fee_bps: 50, reliability_score: 60 });
+
+        let candidates = vec![&env, r1, r2.clone(), r3];
+        let best = client.get_best_route(&candidates).unwrap();
+        assert_eq!(best, Some(r2));
+    }
+
+    #[test]
+    fn test_get_best_route_skips_paused() {
+        let (env, admin, client) = setup();
+        let r1 = String::from_str(&env, "route_a");
+        let r2 = String::from_str(&env, "route_b");
+        let addr = Address::generate(&env);
+
+        client.register_route(&admin, &r1, &addr, &None);
+        client.register_route(&admin, &r2, &addr, &None);
+
+        // r1 has higher score but is paused
+        client.set_route_score(&admin, &r1, &RouteScore { liquidity_score: 100, fee_bps: 0, reliability_score: 100 });
+        client.set_route_score(&admin, &r2, &RouteScore { liquidity_score: 50, fee_bps: 10, reliability_score: 50 });
+        client.set_route_paused(&admin, &r1, &true);
+
+        let candidates = vec![&env, r1, r2.clone()];
+        let best = client.get_best_route(&candidates).unwrap();
+        assert_eq!(best, Some(r2));
+    }
+
+    #[test]
+    fn test_get_best_route_returns_none_when_all_unscored() {
+        let (env, admin, client) = setup();
+        let r1 = String::from_str(&env, "route_a");
+        let addr = Address::generate(&env);
+        client.register_route(&admin, &r1, &addr, &None);
+        // No score set
+        let candidates = vec![&env, r1];
+        let best = client.get_best_route(&candidates).unwrap();
+        assert_eq!(best, None);
+    }
+
+    #[test]
+    fn test_get_best_route_fails_when_router_paused() {
+        let (env, admin, client) = setup();
+        client.set_paused(&admin, &true);
+        let candidates = Vec::new(&env);
+        let result = client.try_get_best_route(&candidates);
+        assert_eq!(result, Err(Ok(RouterError::RouterPaused)));
     }
 }
