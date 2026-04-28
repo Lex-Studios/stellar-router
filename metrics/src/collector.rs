@@ -26,7 +26,7 @@ use tracing::{error, info, warn};
 
 use crate::cli::Args;
 use crate::metrics::RouterMetrics;
-use crate::rpc::SorobanRpcClient;
+use crate::rpc::{RpcClient, SorobanRpcClient};
 
 /// Drives the periodic scrape loop.
 #[derive(Clone)]
@@ -65,7 +65,7 @@ impl Collector {
 
     /// Scrape all configured contracts.  Returns `true` if every scrape
     /// succeeded, `false` if any failed.
-    async fn scrape_all(&self, client: &SorobanRpcClient) -> bool {
+    async fn scrape_all(&self, client: &dyn RpcClient) -> bool {
         let mut all_ok = true;
 
         if !self.args.core_contract_id.is_empty() {
@@ -112,7 +112,7 @@ impl Collector {
 
     // ── router-core ───────────────────────────────────────────────────────────
 
-    async fn scrape_core(&self, client: &SorobanRpcClient, contract_id: &str) -> Result<()> {
+    async fn scrape_core(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
         let start = Instant::now();
         info!(contract_id, "scraping router-core");
 
@@ -182,7 +182,7 @@ impl Collector {
 
     // ── router-middleware ─────────────────────────────────────────────────────
 
-    async fn scrape_middleware(&self, client: &SorobanRpcClient, contract_id: &str) -> Result<()> {
+    async fn scrape_middleware(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
         let start = Instant::now();
         info!(contract_id, "scraping router-middleware");
 
@@ -247,7 +247,7 @@ impl Collector {
 
     // ── router-registry ───────────────────────────────────────────────────────
 
-    async fn scrape_registry(&self, client: &SorobanRpcClient, contract_id: &str) -> Result<()> {
+    async fn scrape_registry(&self, client: &dyn RpcClient, contract_id: &str) -> Result<()> {
         let start = Instant::now();
         info!(contract_id, "scraping router-registry");
 
@@ -275,7 +275,167 @@ impl Collector {
     }
 }
 
-// ── Value extraction helpers ──────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rpc::MockRpcClient;
+    use prometheus::Registry;
+    use serde_json::json;
+
+    fn make_collector(
+        core: &str,
+        middleware: &str,
+        registry_id: &str,
+    ) -> (Collector, RouterMetrics) {
+        let reg = Registry::new();
+        let metrics = RouterMetrics::new(&reg).unwrap();
+        let args = Args {
+            rpc_url: String::new(),
+            network_passphrase: String::new(),
+            core_contract_id: core.to_string(),
+            middleware_contract_id: middleware.to_string(),
+            registry_contract_id: registry_id.to_string(),
+            scrape_interval_secs: 15,
+            listen: "0.0.0.0:9090".to_string(),
+            rpc_timeout_secs: 10,
+        };
+        let collector = Collector::new(args, metrics.clone());
+        (collector, metrics)
+    }
+
+    #[tokio::test]
+    async fn test_scrape_core_updates_metrics() {
+        let (collector, metrics) = make_collector("CORE_ID", "", "");
+
+        let mock = MockRpcClient::new()
+            .with_u64("CORE_ID", "total_routed", 42)
+            .with_string_vec("CORE_ID", "get_all_routes", vec![]);
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        let val = metrics
+            .core_total_routed
+            .with_label_values(&["CORE_ID"])
+            .get();
+        assert_eq!(val, 42.0);
+    }
+
+    #[tokio::test]
+    async fn test_scrape_middleware_updates_metrics() {
+        let (collector, metrics) = make_collector("", "MW_ID", "");
+
+        let mock = MockRpcClient::new()
+            .with_u64("MW_ID", "total_calls", 7)
+            .with_string_vec("MW_ID", "get_configured_routes", vec![]);
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        let val = metrics
+            .middleware_total_calls
+            .with_label_values(&["MW_ID"])
+            .get();
+        assert_eq!(val, 7.0);
+    }
+
+    #[tokio::test]
+    async fn test_scrape_registry_updates_metrics() {
+        let (collector, metrics) = make_collector("", "", "REG_ID");
+
+        let mock = MockRpcClient::new().with_string_vec(
+            "REG_ID",
+            "get_all_names",
+            vec!["oracle".to_string(), "vault".to_string()],
+        );
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        let val = metrics
+            .registry_total_names
+            .with_label_values(&["REG_ID"])
+            .get();
+        assert_eq!(val, 2.0);
+    }
+
+    #[tokio::test]
+    async fn test_scrape_failure_returns_false_and_increments_error_counter() {
+        let (collector, metrics) = make_collector("CORE_ID", "", "");
+
+        // Mock returns no response → scrape_core will fail
+        let mock = MockRpcClient::new();
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(!ok);
+
+        let errors = metrics
+            .scrape_errors_total
+            .with_label_values(&["CORE_ID"])
+            .get();
+        assert_eq!(errors, 1.0);
+    }
+
+    #[tokio::test]
+    async fn test_scrape_core_with_routes_and_circuit_breaker() {
+        let (collector, metrics) = make_collector("CORE_ID", "MW_ID", "");
+
+        let mock = MockRpcClient::new()
+            .with_u64("CORE_ID", "total_routed", 100)
+            .with_string_vec(
+                "CORE_ID",
+                "get_all_routes",
+                vec!["oracle".to_string()],
+            )
+            .with_simulate(
+                "CORE_ID",
+                "get_route",
+                json!({ "results": [{ "retval": { "paused": false } }] }),
+            )
+            .with_u64("MW_ID", "total_calls", 50)
+            .with_string_vec(
+                "MW_ID",
+                "get_configured_routes",
+                vec!["oracle".to_string()],
+            )
+            .with_simulate(
+                "MW_ID",
+                "circuit_breaker_state",
+                json!({
+                    "results": [{
+                        "retval": {
+                            "some": { "is_open": true, "failure_count": 3, "opened_at": 1000 }
+                        }
+                    }]
+                }),
+            );
+
+        let ok = collector.scrape_all(&mock).await;
+        assert!(ok);
+
+        assert_eq!(
+            metrics
+                .core_total_routed
+                .with_label_values(&["CORE_ID"])
+                .get(),
+            100.0
+        );
+        assert_eq!(
+            metrics
+                .middleware_circuit_open
+                .with_label_values(&["MW_ID", "oracle"])
+                .get(),
+            1.0
+        );
+        assert_eq!(
+            metrics
+                .middleware_failure_count
+                .with_label_values(&["MW_ID", "oracle"])
+                .get(),
+            3.0
+        );
+    }
+}
 
 /// Encode a plain string as a base64 XDR `ScVal::String` argument.
 ///
